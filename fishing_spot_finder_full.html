@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fishing Spot Finder</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 100vh; }
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 12px;
+      border-radius: 8px;
+      box-shadow: 0 0 12px rgba(0, 0, 0, 0.2);
+    }
+    select, button, input {
+      width: 100%;
+      margin-top: 5px;
+      padding: 6px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+<div id="controls">
+  <select id="lang">
+    <option value="en">English</option>
+    <option value="es">Español</option>
+  </select>
+  <label data-i18n="filter">Filter by type:</label>
+  <select id="typeFilter">
+    <option value="">All Types</option>
+    <option value="lake">Lake</option>
+    <option value="river">River</option>
+    <option value="pier">Pier</option>
+    <option value="pond">Pond</option>
+  </select>
+  <button onclick="showFavorites()" data-i18n="showFavorites">Show Favorites</button>
+  <button onclick="promptAddSpot()" data-i18n="addSpot">Add Your Own Spot</button>
+  <button onclick="exportFavorites('json')" data-i18n="exportJSON">Export as JSON</button>
+  <button onclick="exportFavorites('csv')" data-i18n="exportCSV">Export as CSV</button>
+  <button onclick="shareFavorites()" data-i18n="share">Share Favorites</button>
+</div>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/i18next@23.4.6/i18next.min.js"></script>
+<script>
+  const translations = {
+    en: {
+      filter: "Filter by type:",
+      showFavorites: "Show Favorites",
+      addSpot: "Add Your Own Spot",
+      exportJSON: "Export as JSON",
+      exportCSV: "Export as CSV",
+      share: "Share Favorites"
+    },
+    es: {
+      filter: "Filtrar por tipo:",
+      showFavorites: "Ver favoritos",
+      addSpot: "Añadir tu propio lugar",
+      exportJSON: "Exportar como JSON",
+      exportCSV: "Exportar como CSV",
+      share: "Compartir favoritos"
+    }
+  };
+
+  const t = (key) => translations[i18next.language || 'en'][key] || key;
+  document.getElementById("lang").addEventListener("change", (e) => {
+    const lang = e.target.value;
+    i18next.changeLanguage(lang);
+    updateTexts();
+  });
+
+  function updateTexts() {
+    document.querySelectorAll("[data-i18n]").forEach(el => {
+      el.textContent = t(el.getAttribute("data-i18n"));
+    });
+  }
+
+  i18next.init({
+    lng: "en",
+    resources: { en: { translation: translations.en }, es: { translation: translations.es } }
+  }, updateTexts);
+
+  let userLocation = null;
+  let favorites = JSON.parse(localStorage.getItem("fishingFavorites") || "[]");
+  const map = L.map("map").setView([40.7128, -74.006], 10);
+  const drawnItems = new L.FeatureGroup();
+  map.addLayer(drawnItems);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+  new L.Control.Draw({ draw: { rectangle: true }, edit: { featureGroup: drawnItems } }).addTo(map);
+
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition((pos) => {
+      userLocation = [pos.coords.latitude, pos.coords.longitude];
+      map.setView(userLocation, 13);
+      L.marker(userLocation).addTo(map).bindPopup("You are here").openPopup();
+    });
+  }
+
+  map.on(L.Draw.Event.CREATED, async function (e) {
+    const layer = e.layer;
+    drawnItems.clearLayers();
+    drawnItems.addLayer(layer);
+
+    const b = layer.getBounds();
+    const query = `[out:json][timeout:25];(node["leisure"="fishing"](${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}));out center tags;`;
+
+    const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: query });
+    const data = await res.json();
+
+    data.elements.forEach(el => {
+      const lat = el.lat || el.center.lat;
+      const lon = el.lon || el.center.lon;
+      const name = el.tags.name || "Fishing Spot";
+      const type = el.tags.natural || el.tags.water || "Unknown";
+
+      const popup = `<strong>${name}</strong><br>Type: ${type}<br>
+        <button onclick='saveFavorite(${lat}, ${lon}, "${name}")'>❤️ Save</button><br>
+        <label>Rating:</label><input type='number' min='1' max='5' onchange='rateSpot(${lat}, ${lon}, this.value)'><br>
+        <label>Comment:</label><input type='text' onchange='commentSpot(${lat}, ${lon}, this.value)'><br>
+        <a href='https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}' target='_blank'>🗺️ Directions</a>`;
+      L.marker([lat, lon]).addTo(map).bindPopup(popup);
+    });
+  });
+
+  function saveFavorite(lat, lon, name) {
+    favorites.push({ lat, lon, name });
+    localStorage.setItem("fishingFavorites", JSON.stringify(favorites));
+    alert("Saved to favorites!");
+  }
+
+  function showFavorites() {
+    favorites.forEach(fav => {
+      L.marker([fav.lat, fav.lon]).addTo(map)
+        .bindPopup(`<strong>${fav.name}</strong><br>❤️ Saved Location`);
+    });
+  }
+
+  function rateSpot(lat, lon, rating) {
+    localStorage.setItem(`rating_${lat}_${lon}`, rating);
+  }
+
+  function commentSpot(lat, lon, comment) {
+    localStorage.setItem(`comment_${lat}_${lon}`, comment);
+  }
+
+  function exportFavorites(type) {
+    let content;
+    if (type === "json") {
+      content = JSON.stringify(favorites, null, 2);
+    } else {
+      content = "name,lat,lon\n" + favorites.map(f => `${f.name},${f.lat},${f.lon}`).join("\n");
+    }
+    const blob = new Blob([content], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `favorites.${type}`;
+    a.click();
+  }
+
+  function shareFavorites() {
+    if (navigator.share) {
+      navigator.share({
+        title: "My Fishing Favorites",
+        text: "Check out my fishing spots!",
+        url: window.location.href
+      }).catch(console.error);
+    } else {
+      alert("Web Share not supported on this device.");
+    }
+  }
+
+  function promptAddSpot() {
+    const name = prompt("Enter name of your fishing spot:");
+    if (!name) return;
+    map.once("click", e => {
+      const { lat, lng } = e.latlng;
+      L.marker([lat, lng])
+        .addTo(map)
+        .bindPopup(`<strong>${name}</strong><br>🎣 User Spot<br><button onclick='saveFavorite(${lat}, ${lng}, "${name}")'>❤️ Save</button>`)
+        .openPopup();
+    });
+    alert("Now click on the map where your spot is.");
+  }
+
+  // PWA Service Worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('data:text/javascript;charset=utf-8,' +
+      encodeURIComponent(`
+        self.addEventListener('install', e => {
+          e.waitUntil(caches.open('fishing-cache').then(c => c.addAll(['/'])));
+        });
+        self.addEventListener('fetch', e => {
+          e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+        });
+      `), { type: 'module' });
+  }
+</script>
+</body>
+</html>
